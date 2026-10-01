@@ -122,6 +122,10 @@ def fetch(
     get_gdfs = _prettymaps_get_gdfs()
 
     layers = deepcopy(LAYERS)
+    # prettymaps fetches "waterway" as a road-style network without a filter,
+    # which downloads the whole street network a second time. Rivers are
+    # fetched below with a small feature query instead.
+    layers.pop("waterway")
     if not sea:
         layers.pop("sea")
     for kwargs in layers.values():
@@ -135,21 +139,36 @@ def fetch(
         radius = None
 
     gdfs = get_gdfs(query, layers, radius, None, 0, logging=logging)
-    if landuse:
-        gdfs["landuse"] = fetch_landuse(gdfs["perimeter"])
+    gdfs.update(fetch_extras(gdfs["perimeter"], landuse=landuse))
     return gdfs
 
 
-def fetch_landuse(perimeter: gp.GeoDataFrame) -> gp.GeoDataFrame:
-    """Land-use polygons inside the perimeter (empty on any download error)."""
+def fetch_extras(perimeter: gp.GeoDataFrame, landuse: bool = True) -> Dict[str, gp.GeoDataFrame]:
+    """
+    Rivers/streams (and land-use areas) in one small request.
+
+    Returns {"waterway": ..., "landuse": ...}; layers are empty (never an
+    error) when nothing is mapped or the download fails.
+    """
     import osmnx as ox
 
     area = perimeter.to_crs(4326).geometry.union_all()
+    tags = {"waterway": list(WATERWAY_WIDTHS)}
+    if landuse:
+        tags["landuse"] = True
     try:
-        gdf = ox.features.features_from_polygon(area, tags={"landuse": True})
+        features = ox.features.features_from_polygon(area, tags=tags)
     except Exception:
-        return gp.GeoDataFrame(geometry=[], crs=4326)
-    gdf = gdf[gdf.geom_type.isin(["Polygon", "MultiPolygon"])][["landuse", "geometry"]]
-    gdf = gdf.copy()
-    gdf.geometry = gdf.geometry.intersection(area)
-    return gdf[~gdf.geometry.is_empty].reset_index(drop=True)
+        features = None
+
+    def pick(column, kinds):
+        if features is None or features.empty or column not in features:
+            return gp.GeoDataFrame({column: []}, geometry=[], crs=4326)
+        gdf = features[features[column].notna() & features.geom_type.isin(kinds)][[column, "geometry"]].copy()
+        gdf.geometry = gdf.geometry.intersection(area)
+        return gdf[~gdf.geometry.is_empty].reset_index(drop=True)
+
+    out = {"waterway": pick("waterway", ["LineString", "MultiLineString"])}
+    if landuse:
+        out["landuse"] = pick("landuse", ["Polygon", "MultiPolygon"])
+    return out
