@@ -29,3 +29,26 @@ def test_live_preview_updates_each_stage():
     assert len(pngs) == 2 and all(p.startswith(b"\x89PNG") for p in pngs)
     final = status.update.call_args_list[-1].args[0].data
     assert "Map outline" in final and "shapes" in final and "Done in 3.0 s" in final
+
+
+def test_live_preview_shows_failed_downloads():
+    handles = []
+
+    def fake_display(obj, display_id=False):
+        handle = mock.Mock()
+        handles.append(handle)
+        return handle
+
+    with mock.patch("IPython.display.display", fake_display):
+        preview = LivePreview(size=3, dpi=40)
+    status, _ = handles
+    city = fake_city()
+    preview("outline", {"perimeter": city["perimeter"]}, 0.5)
+    preview("features", {"perimeter": city["perimeter"]}, 116.0, "ConnectionError: 429 Too Many Requests")
+    preview("streets", {k: city[k] for k in ("perimeter", "streets")}, 180.0)
+    preview.finish(180.0)
+    final = status.update.call_args_list[-1].args[0].data
+    assert "⚠ Buildings, parks &amp; water · download failed" in final and "429" in final
+    assert "Streets ·" in final and "shapes" in final
+    assert "with download problems" in final
+    print(final.replace("<br>", "\n"))

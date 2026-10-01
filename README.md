@@ -11,8 +11,9 @@ Both credits are printed on every poster, as the prettymaps author and the OSM l
 ## What it adds on top of prettymaps
 
 **Pick the area on a map**
-- Search for a place, click to move the pin, and choose a circle or square with a radius slider.
-- Or draw any polygon or rectangle on the map.
+- Find a place by name. If it has an official boundary (ward, district, park…), it is outlined, centred, and the radius is set to cover all of it.
+- Choose a circle or square around it, **Boundary only** (just that place, neighbouring areas removed), or draw any polygon or rectangle.
+- Click to move the pin; adjust the radius and the border around the map.
 
 **Colour that doesn't depend on parks and water**
 
