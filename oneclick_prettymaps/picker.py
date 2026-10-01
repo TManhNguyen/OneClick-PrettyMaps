@@ -56,7 +56,7 @@ def _square_bounds(lat: float, lon: float, radius: float):
 
 class MapPicker:
     """
-    picker = MapPicker("Ho Chi Minh City")   # or MapPicker((10.7769, 106.7009))
+    picker = MapPicker()                  # starts on Ho Chi Minh City; or MapPicker("Hoi An")
     picker.show()
     ...
     gdfs = fetch(**picker.selection())
