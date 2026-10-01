@@ -22,7 +22,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __version__ = "0.5.0"
 
-from .fetch import fetch, polygon_query
+from .fetch import fetch, find_place, fit_area, polygon_query
 from .fonts import load_fonts
 from .palettes import PALETTES, Theme, from_colorhunt, get_palette
 from .preview import LivePreview
@@ -39,7 +39,7 @@ def __getattr__(name):
 
 
 __all__ = [
-    "fetch", "polygon_query", "render", "save", "random_seed_name", "load_fonts", "MapPicker", "LivePreview",
+    "fetch", "find_place", "fit_area", "polygon_query", "render", "save", "random_seed_name", "load_fonts", "MapPicker", "LivePreview",
     "Theme", "PALETTES", "from_colorhunt", "get_palette",
     "BUILDING_MODES", "STREET_MODES", "LAYOUTS",
 ]

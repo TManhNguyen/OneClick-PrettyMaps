@@ -19,7 +19,7 @@ from copy import deepcopy
 from typing import Callable, Dict, Optional, Tuple, Union
 
 import geopandas as gp
-from shapely.geometry import Polygon, box, shape
+from shapely.geometry import Point, Polygon, box, shape
 from shapely.ops import unary_union
 
 # Street widths (metres, buffer radius) - same as prettymaps' default preset
@@ -89,6 +89,44 @@ def _prettymaps():
     import prettymaps.fetch
 
     return prettymaps.fetch
+
+
+def find_place(name: str) -> Optional[gp.GeoDataFrame]:
+    """
+    Official boundary of a named place (ward, district, park...), or None
+    when the name is not found or only matches a point. Also accepts an
+    OpenStreetMap id such as "R1234567".
+    """
+    import osmnx as ox
+
+    name = name.strip()
+    by_osmid = re.fullmatch(r"[NWR]\d+", name, re.I) is not None
+    try:
+        gdf = ox.geocoder.geocode_to_gdf(name.upper() if by_osmid else name, by_osmid=by_osmid)
+    except Exception:
+        return None
+    if gdf.empty or not gdf.geom_type.isin(["Polygon", "MultiPolygon"]).all():
+        return None
+    return gdf.reset_index(drop=True)
+
+
+def fit_area(boundary: gp.GeoDataFrame, margin: float = 0.02) -> dict:
+    """
+    Centre and sizes that frame a boundary: the centre of its extent, the
+    circle radius and the square half-side (metres) that contain all of it,
+    plus `margin` of its width on each side.
+    """
+    utm = boundary.to_crs(4326).estimate_utm_crs()
+    shape = boundary.to_crs(utm).geometry.union_all()
+    xmin, ymin, xmax, ymax = shape.bounds
+    centre = Point((xmin + xmax) / 2, (ymin + ymax) / 2)
+    grow = 1 + 2 * margin
+    lonlat = gp.GeoSeries([centre], crs=utm).to_crs(4326).iloc[0]
+    return {
+        "center": (lonlat.y, lonlat.x),
+        "circle_radius": centre.hausdorff_distance(shape) * grow,
+        "square_half": max(xmax - xmin, ymax - ymin) / 2 * grow,
+    }
 
 
 def polygon_query(geojson: dict) -> gp.GeoDataFrame:

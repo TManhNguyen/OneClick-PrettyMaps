@@ -215,3 +215,43 @@ def test_object_only_rejects_point_results(captured, monkeypatch):
     _fake_perimeter(monkeypatch, Point(106.7, 10.74))
     with pytest.raises(ValueError, match="single point"):
         fetch("Some café", radius=None)
+
+
+def test_fit_area_covers_whole_boundary():
+    from shapely.geometry import Polygon
+
+    ward = gp.GeoDataFrame(
+        geometry=[Polygon([(106.69, 10.73), (106.71, 10.73), (106.72, 10.75), (106.70, 10.76)])], crs=4326
+    )
+    fit = fetch_module.fit_area(ward, margin=0.02)
+    lat, lon = fit["center"]
+    assert 106.69 < lon < 106.72 and 10.73 < lat < 10.76
+    utm = ward.estimate_utm_crs()
+    shape = ward.to_crs(utm).geometry.iloc[0]
+    centre = gp.GeoSeries([gp.points_from_xy([lon], [lat])[0]], crs=4326).to_crs(utm).iloc[0]
+    assert centre.buffer(fit["circle_radius"]).contains(shape)          # circle holds the whole ward
+    assert fit["square_half"] * 2 >= max(shape.bounds[2] - shape.bounds[0], shape.bounds[3] - shape.bounds[1])
+
+
+def test_find_place_returns_boundary_or_none(monkeypatch):
+    import osmnx as ox
+    from shapely.geometry import Point, box as bbox
+
+    results = {
+        "Phường Tân Phong": gp.GeoDataFrame({"display_name": ["Phường Tân Phong"]}, geometry=[bbox(106.69, 10.72, 106.71, 10.74)], crs=4326),
+        "Some café": gp.GeoDataFrame(geometry=[Point(106.7, 10.73)], crs=4326),
+    }
+    seen = {}
+
+    def geocode_to_gdf(q, by_osmid=False):
+        seen[q] = by_osmid
+        if q not in results:
+            raise ValueError("not found")
+        return results[q]
+
+    monkeypatch.setattr(ox.geocoder, "geocode_to_gdf", geocode_to_gdf)
+    assert fetch_module.find_place(" Phường Tân Phong ") is not None
+    assert fetch_module.find_place("Some café") is None      # a point, not an area
+    assert fetch_module.find_place("nowhere") is None
+    fetch_module.find_place("r42")
+    assert seen["R42"] is True
