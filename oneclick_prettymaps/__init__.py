@@ -20,11 +20,12 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 from .fetch import fetch, polygon_query
 from .fonts import load_fonts
 from .palettes import PALETTES, Theme, from_colorhunt, get_palette
+from .preview import LivePreview
 from .render import BUILDING_MODES, LAYOUTS, STREET_MODES, render, save
 
 
@@ -38,7 +39,7 @@ def __getattr__(name):
 
 
 __all__ = [
-    "fetch", "polygon_query", "render", "save", "load_fonts", "MapPicker",
+    "fetch", "polygon_query", "render", "save", "load_fonts", "MapPicker", "LivePreview",
     "Theme", "PALETTES", "from_colorhunt", "get_palette",
     "BUILDING_MODES", "STREET_MODES", "LAYOUTS",
 ]

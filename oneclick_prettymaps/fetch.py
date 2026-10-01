@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import importlib
 import sys
+import time
 import types
 from copy import deepcopy
-from typing import Dict, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import geopandas as gp
-from shapely.geometry import Polygon, shape
+from shapely.geometry import Polygon, box, shape
+from shapely.ops import unary_union
 
 # Street widths (metres, buffer radius) - same as prettymaps' default preset
 STREET_WIDTHS = {
@@ -68,9 +70,9 @@ LAYERS = {
 Query = Union[str, Tuple[float, float], gp.GeoDataFrame]
 
 
-def _prettymaps_get_gdfs():
+def _prettymaps():
     """
-    Import prettymaps' downloader.
+    Import prettymaps' downloader module (prettymaps.fetch).
 
     prettymaps is installed without its dependency list (see README), which
     would otherwise upgrade ipykernel and break Colab, and pull ~400 MB of
@@ -83,9 +85,9 @@ def _prettymaps_get_gdfs():
             importlib.import_module(name)
         except ImportError:
             sys.modules[name] = types.ModuleType(name)
-    from prettymaps.fetch import get_gdfs
+    import prettymaps.fetch
 
-    return get_gdfs
+    return prettymaps.fetch
 
 
 def polygon_query(geojson: dict) -> gp.GeoDataFrame:
@@ -96,16 +98,20 @@ def polygon_query(geojson: dict) -> gp.GeoDataFrame:
     return gp.GeoDataFrame(geometry=[geom], crs="EPSG:4326")
 
 
+Progress = Callable[[str, Dict[str, gp.GeoDataFrame], float], None]
+
+
 def fetch(
     query: Query,
     radius: float | None = 1000,
     circle: bool = True,
     sea: bool = True,
     landuse: bool = True,
+    progress: Optional[Progress] = None,
     logging: bool = False,
 ) -> Dict[str, gp.GeoDataFrame]:
     """
-    Download map layers.
+    Download map layers, in stages.
 
     Args:
         query: address / place name, (lat, lon) tuple, or a GeoDataFrame polygon.
@@ -115,19 +121,25 @@ def fetch(
         sea: compute the sea polygon (slower, only useful near coasts).
         landuse: also fetch land-use areas (residential, commercial, ...),
             drawn as a soft colour patchwork where few buildings are mapped.
+        progress: called as progress(stage, layers_so_far, seconds) after each
+            stage ("outline", "features", "rivers", "streets", "sea"), e.g.
+            `LivePreview()` to draw the map while it downloads.
 
     Returns:
         dict of layer name -> GeoDataFrame (EPSG:4326).
     """
-    get_gdfs = _prettymaps_get_gdfs()
+    pf = _prettymaps()
+    start = time.time()
+
+    def done(stage):
+        if progress is not None:
+            progress(stage, gdfs, time.time() - start)
 
     layers = deepcopy(LAYERS)
     # prettymaps fetches "waterway" as a road-style network without a filter,
     # which downloads the whole street network a second time. Rivers are
-    # fetched below with a small feature query instead.
+    # fetched with a small feature query instead (fetch_extras).
     layers.pop("waterway")
-    if not sea:
-        layers.pop("sea")
     for kwargs in layers.values():
         kwargs.setdefault("circle", circle)
         kwargs.setdefault("dilate", None)
@@ -138,9 +150,75 @@ def fetch(
     if not radius:
         radius = None
 
-    gdfs = get_gdfs(query, layers, radius, None, 0, logging=logging)
-    gdfs.update(fetch_extras(gdfs["perimeter"], landuse=landuse))
+    # Same steps as prettymaps.fetch.get_gdfs, split so each can be shown
+    perimeter = pf.get_perimeter(query, radius=radius, circle=circle, dilate=None, rotation=0)
+    gdfs: Dict[str, gp.GeoDataFrame] = {"perimeter": perimeter}
+    done("outline")
+
+    features = {k: v for k, v in layers.items() if k not in ("perimeter", "streets", "sea")}
+    gdfs.update(pf.unified_osm_request(perimeter, features, logging=logging))
+    done("features")
+
+    gdfs.update(fetch_extras(perimeter, landuse=landuse))
+    done("rivers")
+
+    gdfs["streets"] = fetch_streets(perimeter)
+    done("streets")
+
+    if sea:
+        gdfs["sea"] = fetch_sea(perimeter)
+        done("sea")
+
+    if hasattr(progress, "finish"):
+        progress.finish(time.time() - start)
     return gdfs
+
+
+def _clip(gdf: gp.GeoDataFrame, area) -> gp.GeoDataFrame:
+    gdf = gdf.copy()
+    gdf.geometry = gdf.geometry.intersection(area)
+    return gdf[~gdf.geometry.is_empty]
+
+
+def fetch_streets(perimeter: gp.GeoDataFrame) -> gp.GeoDataFrame:
+    """Street network edges inside the perimeter (as prettymaps does it)."""
+    import osmnx as ox
+
+    area = perimeter.to_crs(4326).geometry.union_all()
+    try:
+        graph = ox.graph_from_polygon(box(*area.bounds), truncate_by_edge=True)
+        return _clip(ox.graph_to_gdfs(graph, nodes=False), area)
+    except Exception:
+        return gp.GeoDataFrame(geometry=[], crs=4326)
+
+
+def fetch_sea(perimeter: gp.GeoDataFrame) -> gp.GeoDataFrame:
+    """
+    Sea polygon: the parts of the map cut off by the coastline that no
+    (non-bridge) road crosses. Same method as prettymaps.
+    """
+    import osmnx as ox
+
+    area = perimeter.to_crs(4326).geometry.union_all()
+    bbox = box(*area.bounds)
+    try:
+        coast = ox.features.features_from_polygon(bbox, tags={"natural": "coastline"})
+        candidates = bbox.difference(unary_union(coast.geometry.tolist()).buffer(1e-9))
+        drive = ox.graph_to_gdfs(ox.graph_from_polygon(bbox, network_type="drive"), nodes=False)
+    except Exception:
+        return gp.GeoDataFrame(geometry=[], crs=4326)
+
+    def is_sea(candidate):
+        crossing = drive[drive.geometry.intersects(candidate)]
+        if "bridge" in crossing:
+            crossing = crossing[crossing["bridge"] != "yes"]
+        return crossing.empty
+
+    parts = getattr(candidates, "geoms", [candidates])
+    sea = unary_union([c for c in parts if is_sea(c)])
+    if sea.is_empty:
+        return gp.GeoDataFrame(geometry=[], crs=4326)
+    return _clip(gp.GeoDataFrame(geometry=[sea.buffer(1e-8)], crs=4326), area)
 
 
 def fetch_extras(perimeter: gp.GeoDataFrame, landuse: bool = True) -> Dict[str, gp.GeoDataFrame]:
@@ -164,9 +242,8 @@ def fetch_extras(perimeter: gp.GeoDataFrame, landuse: bool = True) -> Dict[str, 
     def pick(column, kinds):
         if features is None or features.empty or column not in features:
             return gp.GeoDataFrame({column: []}, geometry=[], crs=4326)
-        gdf = features[features[column].notna() & features.geom_type.isin(kinds)][[column, "geometry"]].copy()
-        gdf.geometry = gdf.geometry.intersection(area)
-        return gdf[~gdf.geometry.is_empty].reset_index(drop=True)
+        gdf = features[features[column].notna() & features.geom_type.isin(kinds)][[column, "geometry"]]
+        return _clip(gdf, area).reset_index(drop=True)
 
     out = {"waterway": pick("waterway", ["LineString", "MultiLineString"])}
     if landuse:

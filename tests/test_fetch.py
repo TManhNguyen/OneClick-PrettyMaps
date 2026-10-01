@@ -7,9 +7,9 @@ import pytest
 from shapely.geometry import box
 
 from oneclick_prettymaps import fetch, polygon_query
-from oneclick_prettymaps.fetch import _prettymaps_get_gdfs
+from oneclick_prettymaps.fetch import _prettymaps
 
-_prettymaps_get_gdfs()  # installs stand-ins for vsketch / cv2 when missing
+_prettymaps()  # installs stand-ins for vsketch / cv2 when missing
 import prettymaps.fetch as pf  # noqa: E402
 
 # the package re-exports the fetch() function under the same name as its module
@@ -35,6 +35,8 @@ def captured(monkeypatch):
         return out
 
     monkeypatch.setattr(fetch_module, "fetch_extras", fake_extras)
+    monkeypatch.setattr(fetch_module, "fetch_streets", lambda p: gp.GeoDataFrame(geometry=[], crs=4326))
+    monkeypatch.setattr(fetch_module, "fetch_sea", lambda p: gp.GeoDataFrame(geometry=[], crs=4326))
     return calls
 
 
@@ -45,11 +47,12 @@ def _radius_m(perimeter):
 
 def test_point_circle(captured):
     gdfs = fetch((10.7769, 106.7009), radius=750, circle=True, sea=False)
-    assert "sea" not in captured["layers"]
+    assert "sea" not in gdfs
     # rivers come from fetch_extras, not from prettymaps (which would
-    # download the street network a second time)
-    assert "waterway" not in captured["layers"]
-    assert "waterway" in gdfs
+    # download the street network a second time); streets are fetched
+    # separately so they can be previewed as their own stage
+    assert not {"waterway", "streets", "sea", "perimeter"} & set(captured["layers"])
+    assert {"waterway", "streets", "building"} <= set(gdfs)
     assert abs(_radius_m(gdfs["perimeter"]) - 750) < 5
     g = gdfs["perimeter"].to_crs(gdfs["perimeter"].estimate_utm_crs()).geometry.iloc[0]
     assert len(g.exterior.coords) > 10  # round, not square
@@ -114,3 +117,64 @@ def test_fetch_extras_empty_area(monkeypatch):
     perimeter = gp.GeoDataFrame(geometry=[bbox(106.69, 10.76, 106.72, 10.79)], crs=4326)
     out = fetch_module.fetch_extras(perimeter, landuse=False)
     assert list(out) == ["waterway"] and out["waterway"].empty
+
+
+def test_progress_stages(captured):
+    seen = []
+
+    class Recorder:
+        def __call__(self, stage, gdfs, seconds):
+            seen.append((stage, sorted(gdfs)))
+
+        def finish(self, seconds):
+            seen.append(("finish", seconds >= 0))
+
+    fetch((10.7769, 106.7009), radius=300, sea=True, progress=Recorder())
+    stages = [s for s, _ in seen]
+    assert stages == ["outline", "features", "rivers", "streets", "sea", "finish"]
+    assert seen[0][1] == ["perimeter"]          # outline drawn before any download
+    assert "building" in seen[1][1] and "streets" not in seen[1][1]
+
+
+def test_fetch_streets_clips_to_map(monkeypatch):
+    import osmnx as ox
+    from shapely.geometry import LineString, box as bbox
+
+    edges = gp.GeoDataFrame(
+        {"highway": ["primary", "residential"]},
+        geometry=[LineString([(106.70, 10.775), (106.73, 10.775)]),   # leaves the map
+                  LineString([(106.80, 10.90), (106.81, 10.91)])],    # fully outside
+        crs=4326,
+    )
+    monkeypatch.setattr(ox, "graph_from_polygon", lambda polygon, **kw: "graph")
+    monkeypatch.setattr(ox, "graph_to_gdfs", lambda graph, nodes=False: edges)
+    perimeter = gp.GeoDataFrame(geometry=[bbox(106.69, 10.76, 106.72, 10.79)], crs=4326)
+    out = fetch_module.fetch_streets(perimeter)
+    assert out["highway"].tolist() == ["primary"]
+    assert out.geometry.iloc[0].bounds[2] <= 106.72 + 1e-9
+
+
+def test_fetch_sea_keeps_side_without_roads(monkeypatch):
+    import osmnx as ox
+    from shapely.geometry import LineString, box as bbox
+
+    coast = gp.GeoDataFrame(geometry=[LineString([(106.69, 10.775), (106.72, 10.775)])], crs=4326)
+    roads = gp.GeoDataFrame({"bridge": [None]}, geometry=[LineString([(106.70, 10.78), (106.71, 10.785)])], crs=4326)
+    monkeypatch.setattr(ox.features, "features_from_polygon", lambda polygon, tags: coast)
+    monkeypatch.setattr(ox, "graph_from_polygon", lambda polygon, **kw: "graph")
+    monkeypatch.setattr(ox, "graph_to_gdfs", lambda graph, nodes=False: roads)
+    perimeter = gp.GeoDataFrame(geometry=[bbox(106.69, 10.76, 106.72, 10.79)], crs=4326)
+    sea = fetch_module.fetch_sea(perimeter).geometry.union_all()
+    assert sea.bounds[3] <= 10.775 + 1e-6      # only the southern half (no roads) is sea
+
+
+def test_fetch_sea_offline_is_empty(monkeypatch):
+    import osmnx as ox
+    from shapely.geometry import box as bbox
+
+    def fail(*a, **k):
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(ox.features, "features_from_polygon", fail)
+    perimeter = gp.GeoDataFrame(geometry=[bbox(106.69, 10.76, 106.72, 10.79)], crs=4326)
+    assert fetch_module.fetch_sea(perimeter).empty
