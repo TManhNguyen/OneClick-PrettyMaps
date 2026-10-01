@@ -88,3 +88,60 @@ def test_landuse_patchwork_toggle(city):
 
 def test_render_without_landuse_layer(city):
     plt.close(render({k: v for k, v in city.items() if k != "landuse"}))
+
+
+def test_margin_centres_shape_with_border(city):
+    from shapely.geometry import Polygon
+    import geopandas as gp
+
+    ward = gp.GeoDataFrame(
+        geometry=[Polygon([(106.690, 10.770), (106.700, 10.770), (106.705, 10.785), (106.692, 10.790)])],
+        crs=4326,
+    )
+    layers = {**city, "perimeter": ward}
+    for margin in (0.0, 0.05):
+        fig = render(layers, margin=margin, title=None, subtitle=None)
+        ax = fig.axes[1]  # [paper, map, ...]
+        shape = ward.to_crs(ward.estimate_utm_crs()).geometry.iloc[0]
+        x0, y0, x1, y1 = shape.bounds
+        width = max(x1 - x0, y1 - y0)
+        assert abs(sum(ax.get_xlim()) / 2 - (x0 + x1) / 2) < 1e-6      # centred
+        assert abs((ax.get_xlim()[1] - ax.get_xlim()[0]) - width * (1 + 2 * margin)) < 1e-6
+        plt.close(fig)
+
+
+def test_multipart_boundary_outlines_every_part(city):
+    from shapely.geometry import MultiPolygon, box as bbox
+    import geopandas as gp
+
+    two_islands = gp.GeoDataFrame(
+        geometry=[MultiPolygon([bbox(106.690, 10.770, 106.695, 10.775), bbox(106.700, 10.780, 106.704, 10.784)])],
+        crs=4326,
+    )
+    fig = render({**city, "perimeter": two_islands}, title=None, subtitle=None)
+    outlines = [l for l in fig.axes[1].lines if l.get_zorder() == 20]
+    assert len(outlines) == 2
+    plt.close(fig)
+
+
+def test_seed_names_are_repeatable(city):
+    import io
+    import re as _re
+    from oneclick_prettymaps import random_seed_name
+    from oneclick_prettymaps.render import seed_to_int
+
+    name = random_seed_name()
+    assert _re.fullmatch(r"[a-z]+-\d{3}", name)
+    assert seed_to_int("lotus-482") == seed_to_int(" lotus-482 ")
+    assert seed_to_int("lotus-482") != seed_to_int("lotus-483")
+    assert seed_to_int("7") == 7 == seed_to_int(7)
+
+    def png(seed):
+        fig = render(city, buildings="random", grain=0.1, seed=seed, title=None, subtitle=None, dpi=40)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        return buf.getvalue()
+
+    assert png("lotus-482") == png("lotus-482")
+    assert png("lotus-482") != png("jade-101")

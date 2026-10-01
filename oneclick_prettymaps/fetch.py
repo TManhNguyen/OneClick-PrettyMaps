@@ -11,6 +11,7 @@ Copyright (C) 2026 TManhNguyen. Licensed under the GNU AGPL v3 (see LICENSE).
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 import time
 import types
@@ -115,8 +116,10 @@ def fetch(
 
     Args:
         query: address / place name, (lat, lon) tuple, or a GeoDataFrame polygon.
-        radius: metres around the point. None plots the place's own boundary
-            (or the polygon given as query).
+        radius: metres around the point. None ("this object only") cuts the
+            map out along the place's own boundary, e.g. "Phường Tân Hưng,
+            Hồ Chí Minh" or an OSM id like "R1234567" (or the polygon given
+            as query); everything outside it is left out.
         circle: round map (True) or square (False). Ignored without a radius.
         sea: compute the sea polygon (slower, only useful near coasts).
         landuse: also fetch land-use areas (residential, commercial, ...),
@@ -151,7 +154,18 @@ def fetch(
         radius = None
 
     # Same steps as prettymaps.fetch.get_gdfs, split so each can be shown
-    perimeter = pf.get_perimeter(query, radius=radius, circle=circle, dilate=None, rotation=0)
+    by_osmid = isinstance(query, str) and re.fullmatch(r"[NWR]\d+", query.strip(), re.I) is not None
+    if by_osmid:
+        query = query.strip().upper()
+    perimeter = pf.get_perimeter(
+        query, radius=radius, circle=circle, dilate=None, rotation=0, by_osmid=by_osmid
+    )
+    if radius is None and not perimeter.geom_type.isin(["Polygon", "MultiPolygon"]).all():
+        raise ValueError(
+            f"{query!r} was found as a single point, not an area with a boundary. "
+            "Try a more specific name (e.g. 'Phường Tân Hưng, Hồ Chí Minh, Việt Nam') "
+            "or its OpenStreetMap relation id, e.g. 'R1234567'."
+        )
     gdfs: Dict[str, gp.GeoDataFrame] = {"perimeter": perimeter}
     done("outline")
 

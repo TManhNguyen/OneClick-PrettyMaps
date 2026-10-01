@@ -178,3 +178,40 @@ def test_fetch_sea_offline_is_empty(monkeypatch):
     monkeypatch.setattr(ox.features, "features_from_polygon", fail)
     perimeter = gp.GeoDataFrame(geometry=[bbox(106.69, 10.76, 106.72, 10.79)], crs=4326)
     assert fetch_module.fetch_sea(perimeter).empty
+
+
+def _fake_perimeter(monkeypatch, geometry):
+    seen = {}
+
+    def get_perimeter(query, **kwargs):
+        seen.update(kwargs, query=query)
+        return gp.GeoDataFrame(geometry=[geometry], crs=4326)
+
+    monkeypatch.setattr(pf, "get_perimeter", get_perimeter)
+    return seen
+
+
+def test_object_only_uses_place_boundary(captured, monkeypatch):
+    from shapely.geometry import Polygon
+
+    ward = Polygon([(106.69, 10.73), (106.71, 10.73), (106.72, 10.75), (106.70, 10.76)])
+    seen = _fake_perimeter(monkeypatch, ward)
+    gdfs = fetch("Phường Tân Hưng, Hồ Chí Minh", radius=None)
+    assert seen["radius"] is None and seen["by_osmid"] is False
+    assert gdfs["perimeter"].geometry.iloc[0].equals(ward)
+
+
+def test_object_only_accepts_osm_id(captured, monkeypatch):
+    from shapely.geometry import box as bbox
+
+    seen = _fake_perimeter(monkeypatch, bbox(106.69, 10.73, 106.71, 10.75))
+    fetch(" r1234567 ", radius=None)
+    assert seen["query"] == "R1234567" and seen["by_osmid"] is True
+
+
+def test_object_only_rejects_point_results(captured, monkeypatch):
+    from shapely.geometry import Point
+
+    _fake_perimeter(monkeypatch, Point(106.7, 10.74))
+    with pytest.raises(ValueError, match="single point"):
+        fetch("Some café", radius=None)

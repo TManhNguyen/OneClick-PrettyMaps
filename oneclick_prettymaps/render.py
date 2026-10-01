@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import warnings
+import zlib
 from typing import Dict, Optional, Sequence
 
 import geopandas as gp
@@ -331,10 +332,11 @@ def render(
     subtitle: Optional[str] = "auto",
     legend: bool = False,
     landuse: float = 0.35,
+    margin: float = 0.02,
     layout: str = "poster",
     figsize: Optional[tuple] = None,
     street_scale: float | str = "auto",
-    seed: int = 0,
+    seed: int | str = 0,
     dpi: int = 110,
 ) -> Figure:
     """
@@ -356,16 +358,19 @@ def render(
         legend: show building categories (when coloured by type).
         landuse: strength (0-1) of the land-use colour patchwork (residential,
             commercial, industrial...). 0 turns it off. Needs fetch(landuse=True).
+        margin: empty border on each side of the map shape, as a fraction of
+            its width (0.02 = 2%). The map is always centred on the shape.
         layout: 'poster' | 'square' | 'a4' | 'wallpaper'.
         street_scale: multiply street widths; 'auto' widens them for big areas.
-        seed: makes 'random' colouring and grain repeatable.
+        seed: makes 'random' colouring and the grain pattern repeatable. A
+            number or any text, e.g. a name from random_seed_name().
         dpi: on-screen preview resolution (saving uses save()'s own dpi).
     """
     if not isinstance(theme, Theme):
         theme = Theme.from_palette(theme, dark=dark, glow=glow)
     elif glow is not None:
         theme = theme.with_(glow=glow)
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(seed_to_int(seed))
 
     perimeter_ll = gdfs["perimeter"]
     if perimeter_ll.crs is None:
@@ -391,9 +396,11 @@ def render(
     ax = fig.add_axes(rect)
     ax.set_axis_off()
     ax.set_facecolor("none")
-    pad = extent * 0.02
-    ax.set_xlim(xmin - pad, xmax + pad)
-    ax.set_ylim(ymin - pad, ymax + pad)
+    # Centre on the shape; the square frame fits its longer side plus margin
+    half = extent * (1 + 2 * margin)  # margin of the full width on each side
+    cx, cy = (xmin + xmax) / 2, (ymin + ymax) / 2
+    ax.set_xlim(cx - half, cx + half)
+    ax.set_ylim(cy - half, cy + half)
     ax.set_aspect("equal")
 
     edge = theme.outline if outline else "none"
@@ -478,7 +485,8 @@ def render(
         _draw(ax, blds, blds["c"].tolist(), 10, ec=edge, lw=lw * 0.6)
 
     # --- outline of the map shape ------------------------------------------
-    ax.plot(*_ring_xy(perimeter), color=theme.outline, lw=1.2, zorder=20)
+    for x, y in _rings_xy(perimeter):
+        ax.plot(x, y, color=theme.outline, lw=1.2, zorder=20)
 
     # --- text -------------------------------------------------------------
     text_color = theme.text
@@ -514,10 +522,32 @@ def render(
     return fig
 
 
-def _ring_xy(geom):
-    geom = geom if geom.geom_type == "Polygon" else max(geom.geoms, key=lambda g: g.area)
-    x, y = geom.exterior.xy
-    return np.asarray(x), np.asarray(y)
+SEED_WORDS = (
+    "lotus", "mango", "jade", "coral", "amber", "lantern", "orchid", "pho", "monsoon",
+    "harbor", "ember", "willow", "saffron", "indigo", "comet", "lychee", "tide", "velvet",
+)
+
+
+def random_seed_name() -> str:
+    """A fresh, readable seed such as 'lotus-482'."""
+    rng = np.random.default_rng()
+    return f"{rng.choice(SEED_WORDS)}-{rng.integers(100, 1000)}"
+
+
+def seed_to_int(seed: int | str) -> int:
+    """Numbers are used as is; text seeds map to a stable number."""
+    if isinstance(seed, (int, np.integer)):
+        return int(seed)
+    text = str(seed).strip()
+    return int(text) if text.isdigit() else zlib.crc32(text.encode("utf-8"))
+
+
+def _rings_xy(geom):
+    """Outer boundary of every part (a ward can have several, e.g. islands)."""
+    for part in getattr(geom, "geoms", [geom]):
+        if part.geom_type == "Polygon":
+            x, y = part.exterior.xy
+            yield np.asarray(x), np.asarray(y)
 
 
 def save(fig: Figure, path: str, dpi: int = 300) -> str:
