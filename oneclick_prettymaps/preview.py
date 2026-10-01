@@ -11,6 +11,7 @@ Copyright (C) 2026 TManhNguyen. Licensed under the GNU AGPL v3 (see LICENSE).
 
 from __future__ import annotations
 
+import html
 import io
 from typing import Dict
 
@@ -45,11 +46,11 @@ class LivePreview:
         self._status = display(HTML(self._html(running=True)), display_id=True)
         self._image = display(HTML(""), display_id=True)
 
-    def __call__(self, stage: str, gdfs: Dict[str, gp.GeoDataFrame], seconds: float):
+    def __call__(self, stage: str, gdfs: Dict[str, gp.GeoDataFrame], seconds: float, error: str | None = None):
         from IPython.display import HTML, Image
 
         shapes = sum(len(gdfs.get(name, ())) for name in _LAYERS.get(stage, ()))
-        self.rows.append((STAGES.get(stage, stage), shapes, seconds))
+        self.rows.append((STAGES.get(stage, stage), shapes, seconds, error))
         self._status.update(HTML(self._html(running=True)))
         try:
             self._image.update(Image(data=self._render(gdfs)))
@@ -76,12 +77,30 @@ class LivePreview:
     def _html(self, running: bool, total: float | None = None) -> str:
         lines = []
         previous = 0.0
-        for label, shapes, seconds in self.rows:
-            count = f" · {shapes:,} shapes" if shapes else ""
-            lines.append(f"✔ {label}{count} · {seconds - previous:.1f} s")
+        for name, shapes, seconds, error in self.rows:
+            label = html.escape(name)
+            took = f"{seconds - previous:.1f} s"
             previous = seconds
+            if error:
+                lines.append(
+                    f"<span style='color:#d9480f'>⚠ {label} · download failed after {took}: "
+                    f"{html.escape(error[:200])}</span>"
+                )
+                continue
+            if name == STAGES["outline"]:
+                count = ""
+            elif shapes:
+                count = f" · {shapes:,} shapes"
+            else:
+                count = " · none mapped here"
+            lines.append(f"✔ {label}{count} · {took}")
         if running:
             lines.append("⏳ downloading next layer…" if self.rows else "⏳ starting…")
+        elif any(row[3] for row in self.rows):
+            lines.append(
+                f"<b>Finished in {total:.1f} s with download problems</b> (⚠ above). "
+                "The OpenStreetMap servers may be busy: wait a minute and run this step again."
+            )
         else:
             lines.append(f"<b>Done in {total:.1f} s</b>")
         return "<div style='font-family:monospace;line-height:1.5'>" + "<br>".join(lines) + "</div>"

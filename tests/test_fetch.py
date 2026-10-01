@@ -20,12 +20,12 @@ fetch_module = importlib.import_module("oneclick_prettymaps.fetch")
 def captured(monkeypatch):
     calls = {}
 
-    def fake_request(perimeter, layers_dict, logging=False):
+    def fake_features(perimeter, layers):
         calls["perimeter"] = perimeter
-        calls["layers"] = layers_dict
-        return {name: gp.GeoDataFrame(geometry=[]) for name in layers_dict}
+        calls["layers"] = layers
+        return {name: gp.GeoDataFrame(geometry=[]) for name in layers}
 
-    monkeypatch.setattr(pf, "unified_osm_request", fake_request)
+    monkeypatch.setattr(fetch_module, "fetch_features", fake_features)
 
     def fake_extras(perimeter, landuse=True):
         calls["extras_landuse"] = landuse
@@ -123,7 +123,7 @@ def test_progress_stages(captured):
     seen = []
 
     class Recorder:
-        def __call__(self, stage, gdfs, seconds):
+        def __call__(self, stage, gdfs, seconds, error=None):
             seen.append((stage, sorted(gdfs)))
 
         def finish(self, seconds):
@@ -168,7 +168,7 @@ def test_fetch_sea_keeps_side_without_roads(monkeypatch):
     assert sea.bounds[3] <= 10.775 + 1e-6      # only the southern half (no roads) is sea
 
 
-def test_fetch_sea_offline_is_empty(monkeypatch):
+def test_fetch_sea_raises_download_errors(monkeypatch):
     import osmnx as ox
     from shapely.geometry import box as bbox
 
@@ -177,7 +177,89 @@ def test_fetch_sea_offline_is_empty(monkeypatch):
 
     monkeypatch.setattr(ox.features, "features_from_polygon", fail)
     perimeter = gp.GeoDataFrame(geometry=[bbox(106.69, 10.76, 106.72, 10.79)], crs=4326)
-    assert fetch_module.fetch_sea(perimeter).empty
+    with pytest.raises(ConnectionError):
+        fetch_module.fetch_sea(perimeter)
+
+
+def test_download_retries_backup_server_then_reports(monkeypatch):
+    import osmnx as ox
+
+    tried = []
+
+    def busy():
+        tried.append(ox.settings.overpass_url)
+        raise ConnectionError("429 Too Many Requests")
+
+    original = ox.settings.overpass_url
+    result, error = fetch_module._download(busy, lambda: "empty")
+    assert result == "empty" and "429" in error
+    assert tried == [original, *fetch_module.BACKUP_OVERPASS]
+    assert ox.settings.overpass_url == original          # restored
+
+    tried.clear()
+
+    def flaky():
+        tried.append(ox.settings.overpass_url)
+        if len(tried) == 1:
+            raise TimeoutError("timed out")
+        return "data"
+
+    assert fetch_module._download(flaky, lambda: None) == ("data", None)
+
+
+def test_download_nothing_mapped_is_not_an_error():
+    import osmnx as ox
+
+    def none_here():
+        raise ox._errors.InsufficientResponseError("No matching features")
+
+    assert fetch_module._download(none_here, lambda: "empty") == ("empty", None)
+
+
+def test_partial_failure_is_reported_to_progress(captured, monkeypatch):
+    from shapely.geometry import LineString
+
+    def busy(p):
+        raise ConnectionError("504 Gateway Timeout")
+
+    roads = gp.GeoDataFrame({"highway": ["primary"]}, geometry=[LineString([(106.700, 10.776), (106.702, 10.777)])], crs=4326)
+    monkeypatch.setattr(fetch_module, "fetch_features", lambda p, layers: {k: gp.GeoDataFrame(geometry=[]) for k in layers})
+    monkeypatch.setattr(fetch_module, "fetch_extras", lambda p, landuse=True: (_ for _ in ()).throw(ConnectionError("504")))
+    monkeypatch.setattr(fetch_module, "fetch_streets", lambda p: roads)
+    seen = {}
+    with pytest.warns(UserWarning, match="rivers: download failed"):
+        gdfs = fetch((10.7769, 106.7009), radius=300, sea=False,
+                     progress=lambda stage, g, t, error=None: seen.__setitem__(stage, error))
+    assert seen["rivers"] and "504" in seen["rivers"]
+    assert seen["streets"] is None and len(gdfs["streets"]) == 1
+
+
+def test_everything_failing_raises_clear_error(captured, monkeypatch):
+    def busy(*a, **k):
+        raise ConnectionError("429 Too Many Requests")
+
+    monkeypatch.setattr(fetch_module, "fetch_features", busy)
+    monkeypatch.setattr(fetch_module, "fetch_extras", busy)
+    monkeypatch.setattr(fetch_module, "fetch_streets", busy)
+    with pytest.warns(UserWarning), pytest.raises(fetch_module.DownloadError, match="wait a minute"):
+        fetch((10.7769, 106.7009), radius=300, sea=False)
+
+
+def test_fetch_features_splits_layers_by_tags(monkeypatch):
+    import osmnx as ox
+    from shapely.geometry import box as bbox
+
+    feats = gp.GeoDataFrame(
+        {"building": ["yes", None, None], "leisure": [None, "park", None], "natural": [None, None, "water"]},
+        geometry=[bbox(106.700, 10.770, 106.701, 10.771), bbox(106.702, 10.772, 106.704, 10.774),
+                  bbox(106.705, 10.775, 106.706, 10.776)],
+        crs=4326,
+    )
+    monkeypatch.setattr(ox.features, "features_from_polygon", lambda polygon, tags: feats)
+    perimeter = gp.GeoDataFrame(geometry=[bbox(106.69, 10.76, 106.72, 10.79)], crs=4326)
+    layers = {k: v for k, v in fetch_module.LAYERS.items() if k in ("building", "green", "water", "forest")}
+    out = fetch_module.fetch_features(perimeter, layers)
+    assert (len(out["building"]), len(out["green"]), len(out["water"]), len(out["forest"])) == (1, 1, 1, 0)
 
 
 def _fake_perimeter(monkeypatch, geometry):
