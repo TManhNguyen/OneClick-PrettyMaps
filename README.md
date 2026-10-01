@@ -69,8 +69,8 @@ opm.save(fig, "hanoi.png", dpi=300)
 Install (prettymaps goes in without its own dependency list, which pulls heavy pen-plotter packages and upgrades `ipykernel`, breaking Colab):
 
 ```sh
-pip install --no-deps "prettymaps @ git+https://github.com/marceloprates/prettymaps@02f85870ced807b7d24ce1764764ff877f9edffd"
 pip install "oneclick-prettymaps[picker] @ git+https://github.com/TManhNguyen/OneClick-PrettyMaps"
+pip install --no-deps "prettymaps @ git+https://github.com/marceloprates/prettymaps@02f85870ced807b7d24ce1764764ff877f9edffd"
 ```
 
 Tests (offline, using synthetic map data): `pip install -e .[test] && cd tests && pytest`
