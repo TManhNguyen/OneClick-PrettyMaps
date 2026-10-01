@@ -335,6 +335,7 @@ def render(
     figsize: Optional[tuple] = None,
     street_scale: float | str = "auto",
     seed: int = 0,
+    dpi: int = 110,
 ) -> Figure:
     """
     Draw a poster from fetched layers.
@@ -358,6 +359,7 @@ def render(
         layout: 'poster' | 'square' | 'a4' | 'wallpaper'.
         street_scale: multiply street widths; 'auto' widens them for big areas.
         seed: makes 'random' colouring and grain repeatable.
+        dpi: on-screen preview resolution (saving uses save()'s own dpi).
     """
     if not isinstance(theme, Theme):
         theme = Theme.from_palette(theme, dark=dark, glow=glow)
@@ -381,7 +383,7 @@ def render(
 
     # --- figure -----------------------------------------------------------
     figsize = figsize or LAYOUTS[layout]
-    fig = plt.figure(figsize=figsize)
+    fig = plt.figure(figsize=figsize, dpi=dpi)
     fig.patch.set_facecolor(theme.page)
     has_text = bool(title) or bool(subtitle)
     rect, text_y = _layout(fig, has_text)
@@ -395,7 +397,9 @@ def render(
     ax.set_aspect("equal")
 
     edge = theme.outline if outline else "none"
-    lw = 0.35 if outline else 0.0
+    # Outlines have a fixed width on paper, so on big maps (many small
+    # shapes) they would swamp the fills: thin them as the area grows.
+    lw = 0.35 * float(np.clip(1200 / extent, 0.25, 1.0)) if outline else 0.0
     clip = gp.GeoSeries([perimeter], crs=crs)
 
     # --- land & nature ----------------------------------------------------

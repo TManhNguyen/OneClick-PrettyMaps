@@ -84,7 +84,7 @@ class MapPicker:
             zoom=fit_zoom(self.center[0], radius),
             scroll_wheel_zoom=True,
             basemap=TileLayer(
-                url=tiles or TILES["Streets"][0], max_zoom=19, name="Streets",
+                url=tiles or TILES["Streets"][0], max_zoom=19, name="Streets", detect_retina=True,
                 attribution="Custom tiles" if tiles else TILES["Streets"][1],
             ),
             layout=w.Layout(width="100%", height=height),
@@ -93,6 +93,7 @@ class MapPicker:
             url, attribution = TILES["Satellite"]
             self.map.add(TileLayer(
                 url=url, attribution=attribution, name="Satellite", base=True, visible=False, max_zoom=19,
+                detect_retina=True,
             ))
             self.map.add(LayersControl(position="topright"))
         style = dict(color="#E76F51", fill_color="#E76F51", fill_opacity=0.12, weight=2)
