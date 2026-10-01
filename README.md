@@ -48,7 +48,8 @@ Plain prettymaps colours buildings at random from two colours, so dense cities w
 - `poster`, `square`, `a4` and `wallpaper`, with title, coordinates and legend.
 - PDF or SVG export (vector, sharp at any print size) or PNG up to 600 dpi.
 
-**Faster restyling**
+**Downloading and restyling**
+- A live preview shows the map building up while each layer downloads (outline, buildings and parks, rivers and land use, streets).
 - The data is downloaded once.
 - Re-run the style cell as often as you like.
 
